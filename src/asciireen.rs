@@ -42,8 +42,8 @@ impl Asciireen {
             for i in 0..self.width {
                 print!("{}", func(self.get(i, j)));
             }
-            print!("|");
-            for i in 0..self.width {
+            print!(" ");
+            for i in 0..10 {
                 print!("{}", func(self.get(i, j)));
             }
             println!();

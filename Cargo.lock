@@ -4,6 +4,7 @@ version = "0.1.0"
 dependencies = [
  "array-init 0.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "find_folder 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "image 0.17.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 0.2.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "maplit 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "noise 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
