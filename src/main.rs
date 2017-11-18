@@ -26,9 +26,10 @@ fn sigmoid(x : f32, amplifier : f32) -> f32 {
 
 fn main() {
     // let mut a = Asciireen::new(WIDTH, LENGTH);
-    for i in 0..15 {
-        let w = World::new(rand::random());
-        let x = w.to_png(Path::new(&format!("./map_{}.png", i)), 200);
+    for i in 0..25 {
+        let w = World::new(i);
+        let x = w.to_png(Path::new(&format!("./map_{}.png", i)), 300);
+        println!("{} : {:?}", i, x);
     }
     // println!("print went {:?}", x);
     // for x in 0..WIDTH {

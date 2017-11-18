@@ -21,21 +21,21 @@ pub struct NoiseField {
     perlins1 : [&'static Perlin ; NoiseField::PERLINS],
     perlins2 : [&'static Perlin ; NoiseField::PERLINS],
     zooms : [f32 ; NoiseField::PERLINS*2],
+    meta_zoom : f32,
     //mult.iter().sum() == 1.0
     mults : [f32 ; NoiseField::PERLINS],
-    // zoomtot : f32,
     super_seed : u64,
     pole_heights : [f32 ; 2],
 }
 
 impl NoiseField {
 
-    const PERLINS : usize = 8;
+    const PERLINS : usize = 6;
     pub fn get_super_seed(&self) -> u64 {
         self.super_seed
     }
 
-    pub fn from_super_seed(super_seed : u64) -> NoiseField {
+    pub fn from_super_seed(super_seed : u64, zoom : f32) -> NoiseField {
         let mut rng = Isaac64Rng::from_seed(&[super_seed]);
         let mut zooms : [f32;NoiseField::PERLINS*2] =
             ::array_init::array_init(|_| (rng.next_f32() * 1.09).powf(6.0));
@@ -45,13 +45,14 @@ impl NoiseField {
         zooms[0] = 6.7; //need at least one to be fine noise
         zooms[NoiseField::PERLINS] = 3.9; //need at least one to be fine noise
         // let zooms = [rng.next_f32() ; NoiseField::PERLINS*2];
-        println!("{:?}", &zooms);
+        // println!("{:?}", &zooms);
 
         let mult_tot = mults.iter().sum();
         for m in mults.iter_mut() {
             *m /= mult_tot;
         }
         NoiseField {
+            meta_zoom : zoom,
             perlins1 : ::array_init::array_init(
                 |_| &PERLINS[(rng.next_u32() as usize) % NUM_PERLINS]
             ),
@@ -76,11 +77,11 @@ impl NoiseField {
         for i in 0..Self::PERLINS {
             sample_tot +=
             self.perlins1[i].get(
-                Self::pt_map(pt, self.zooms[i])
+                Self::pt_map(pt, self.zooms[i] * self.meta_zoom)
             )
             *
             self.perlins2[i].get(
-                Self::pt_map(pt, self.zooms[i + Self::PERLINS])
+                Self::pt_map(pt, self.zooms[i + Self::PERLINS] * self.meta_zoom)
             )
             *
             self.mults[i];
