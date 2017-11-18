@@ -16,54 +16,57 @@ lazy_static! {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
+struct PerlinUnit {
+    p1 : &'static Perlin,
+    p2 : &'static Perlin,
+    zoom1 : f32,
+    zoom2 : f32,
+    mult : f32,
+}
+
+#[derive(Debug,Clone)]
 pub struct NoiseField {
-    perlins1 : [&'static Perlin ; NoiseField::PERLINS],
-    perlins2 : [&'static Perlin ; NoiseField::PERLINS],
-    zooms : [f32 ; NoiseField::PERLINS*2],
-    meta_zoom : f32,
-    //mult.iter().sum() == 1.0
-    mults : [f32 ; NoiseField::PERLINS],
-    super_seed : u64,
-    pole_heights : [f32 ; 2],
+    perlin_units : Vec<PerlinUnit>,
 }
 
 impl NoiseField {
-
-    const PERLINS : usize = 6;
-    pub fn get_super_seed(&self) -> u64 {
-        self.super_seed
+    fn rebalance_unit_mults(perlin_units : &mut Vec<PerlinUnit>) {
+        let mult_tot : f32 = perlin_units.iter().map(|x| x.mult).sum();
+        for pu in perlin_units.iter_mut() {
+            pu.mult = pu.mult / mult_tot;
+        }
     }
 
-    pub fn from_super_seed(super_seed : u64, zoom : f32) -> NoiseField {
-        let mut rng = Isaac64Rng::from_seed(&[super_seed]);
-        let mut zooms : [f32;NoiseField::PERLINS*2] =
-            ::array_init::array_init(|_| (rng.next_f32() * 1.09).powf(6.0));
-        let mut mults : [f32 ; NoiseField::PERLINS] =
-            ::array_init::array_init(|_| (0.1 + rng.next_f32() * 0.9));
-        mults[0] = 0.02; //gentle
-        zooms[0] = 6.7; //need at least one to be fine noise
-        zooms[NoiseField::PERLINS] = 3.9; //need at least one to be fine noise
-        // let zooms = [rng.next_f32() ; NoiseField::PERLINS*2];
-        // println!("{:?}", &zooms);
-
-        let mult_tot = mults.iter().sum();
-        for m in mults.iter_mut() {
-            *m /= mult_tot;
+    fn unbalance_unit_mults(perlin_units : &mut Vec<PerlinUnit>, desired_tot : f32) {
+        assert!(desired_tot > 0.0);
+        let mult_tot : f32 = perlin_units.iter().map(|x| x.mult).sum();
+        for pu in perlin_units.iter_mut() {
+            pu.mult = pu.mult / mult_tot * desired_tot;
         }
+    }
+
+    pub fn generate<R : Rng>(rng : &mut R, zoom_bounds : [f32;2], num_units : u8) -> NoiseField {
+        assert!(zoom_bounds[0] <= zoom_bounds[1]);
+        assert!(num_units > 0);
+        let between = move |ratio| {
+            ratio*(zoom_bounds[1] - zoom_bounds[0]) + zoom_bounds[0]
+        };
+        let mut perlin_units = vec![];
+        for i in 0..(num_units as usize) {
+            let pu = PerlinUnit{
+                p1 : &PERLINS[(rng.next_u32() as usize) % NUM_PERLINS],
+                p2 : &PERLINS[(rng.next_u32() as usize) % NUM_PERLINS],
+                zoom1 : between(i as f32 / (if num_units == 1 {1} else {num_units-1}) as f32),
+                zoom2 : between(rng.gen::<f32>() * 2.4),
+                mult : rng.gen::<f32>() + 0.01,
+            };
+            perlin_units.push(pu);
+        }
+        Self::rebalance_unit_mults(&mut perlin_units);
+
         NoiseField {
-            meta_zoom : zoom,
-            perlins1 : ::array_init::array_init(
-                |_| &PERLINS[(rng.next_u32() as usize) % NUM_PERLINS]
-            ),
-            perlins2 : ::array_init::array_init(
-                |_| &PERLINS[(rng.next_u32() as usize) % NUM_PERLINS]
-            ),
-            zooms : zooms,
-            mults : mults,
-            // zoomtot : zooms.iter().sum(),
-            pole_heights : ::array_init::array_init(|_| rng.next_f32().powf(1.2)),
-            super_seed : super_seed,
+            perlin_units : perlin_units,
         }
     }
 
@@ -72,21 +75,29 @@ impl NoiseField {
         [pt[0] as f32 * zoom, pt[1] as f32 * zoom]
     }
 
+    pub fn agglomerate(self, other : NoiseField, relative_multipliers : Option<(f32, f32)>) -> NoiseField {
+        let mut a = self.perlin_units;
+        let mut b = other.perlin_units;
+        if let Some((a_scale, b_scale)) = relative_multipliers {
+            Self::unbalance_unit_mults(&mut a, a_scale);
+            Self::unbalance_unit_mults(&mut b, b_scale);
+        }
+        let mut combined = a;
+        combined.extend(b);
+        Self::rebalance_unit_mults(&mut combined);
+        NoiseField {
+            perlin_units : combined,
+        }
+    }
+
     pub fn sample(&self, pt : Point) -> f32 {
         let mut sample_tot : f32 = 0.0;
-        for i in 0..Self::PERLINS {
+        for pu in self.perlin_units.iter() {
             sample_tot +=
-            self.perlins1[i].get(
-                Self::pt_map(pt, self.zooms[i] * self.meta_zoom)
-            )
-            *
-            self.perlins2[i].get(
-                Self::pt_map(pt, self.zooms[i + Self::PERLINS] * self.meta_zoom)
-            )
-            *
-            self.mults[i];
-        };
-        // print!(" {}", x);
-        sigmoid(sample_tot, Self::PERLINS as f32 * 2.0)
+                pu.p1.get(Self::pt_map(pt, pu.zoom1))
+                * pu.p2.get(Self::pt_map(pt, pu.zoom2))
+                * pu.mult;
+        }
+        sigmoid(sample_tot, self.perlin_units.len() as f32)
     }
 }
