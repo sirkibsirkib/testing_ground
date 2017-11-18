@@ -48,10 +48,10 @@ fn does(range : [u64;2]) ->  std::thread::JoinHandle<()> {
 fn main() {
     let seed = 2;
     let mut handles = vec![
-        does([0, 5]),
-        does([5, 10]),
-        does([10, 15]),
-        does([15, 20]),
+        does([0, 50]),
+        does([50, 100]),
+        does([100, 150]),
+        // does([150, 200]),
     ];
     for x in handles.drain(..) {
         x.join().is_ok();

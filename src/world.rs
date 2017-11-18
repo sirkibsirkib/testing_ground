@@ -46,7 +46,7 @@ type U8Pixel = [u8 ; 3];
 
 #[derive(PartialEq,Eq,Copy,Clone)]
 pub enum Material {
-    Rock, Foliage, Water, Ice, Snow, DarkRock,
+    Rock, Trees, Grass, Water, Ice, Snow, DarkRock,
 }
 
 impl Material {
@@ -54,7 +54,8 @@ impl Material {
         match self {
             &Material::Rock => [0.7, 0.4, 0.25],
             &Material::DarkRock => [0.65, 0.25, 0.1],
-            &Material::Foliage => [0.3, 0.6, 0.4],
+            &Material::Trees => [0.3, 0.6, 0.4],
+            &Material::Grass => [0.5, 0.65, 0.4],
             &Material::Water => [0.3, 0.5, 1.0],
             &Material::Ice => [0.8, 0.8, 1.0],
             &Material::Snow => [1.0, 1.0, 1.0],
@@ -77,23 +78,24 @@ fn px_finalize(x : FloatPixel) -> U8Pixel {
     (x[2] * 254.0) as u8]
 }
 
+#[derive(Debug)]
 pub struct World {
     base_height : NoiseField,
     complex_height : NoiseField,
     temp_nf : NoiseField,
     water_level : f32,
     pole_heights : [f32;2],
-    temp_equator : f32,     //0==freezing, 1==boiling
-    temp_pole : f32,
-    height_curve : CurveFunc,
+    snow_below_temp : f32,
+    grass_within : [f32;2],
+    trees_within : [f32;2],
 }
 
 fn globe_sample(nf : &NoiseField, pt : Point) -> f32 {
     let x1 = pt[0] / 2.0;
     let x2 = x1 + 0.5;
     let y = pt[1] / 2.0;
-    nf.sample([1.4*x1, y]) * pwr(x1)
-    + nf.sample([1.4*x2, y]) * pwr(x2)
+    nf.sample([1.9*x1, y]) * pwr(x1)
+    + nf.sample([1.9*x2, y]) * pwr(x2)
 }
 
 #[derive(Copy,Clone,Debug)]
@@ -139,7 +141,7 @@ impl World {
 
         let size = rng.gen::<f32>() * (0.2 + 0.8*wp.distance_to_star);
         let radiated_heat = wp.star_energy * (1.0 - wp.distance_to_star);
-        let water_level = sig_0_pt5(rng.gen::<f32>() * size * (1.0 - radiated_heat), 0.8);
+        let water_level = sig_0_pt5(rng.gen::<f32>() * size * (1.0 - radiated_heat), 0.5);
 
 
         let base_height_bounds = [
@@ -168,21 +170,20 @@ impl World {
             Self::raw_sample(&base_height, [rng.gen(), 0.0]) * 0.5 + 0.5,
             Self::raw_sample(&base_height, [rng.gen(), 1.0]) * 0.5 + 0.5,
         ];
-        
-        println!("wp {:?} size {:?} radiated {:?} waterlv {:?} base_height_bounds : {:?}, pole_heights : {:?}",
-            &wp, size, radiated_heat, water_level, &base_height_bounds, &pole_heights);
 
-        let temps : [f32;2] = ::array_init::array_init(|_| rng.gen::<f32>() * 5.0 - 2.0);
-        World {
+        // let temps : [f32;2] = ::array_init::array_init(|_| rng.gen::<f32>() * 5.0 - 2.0);
+        let w = World {
             base_height : base_height,
             complex_height : complex_height,
-            height_curve : CurveFunc::new(&mut rng, 5),
             temp_nf : NoiseField::generate(&mut rng, [60.0, 100.0], 3),
             water_level : water_level,
             pole_heights : pole_heights,
-            temp_equator : if temps[0] > temps[1] {temps[0]} else {temps[1]},
-            temp_pole :  if temps[0] < temps[1] {temps[0]} else {temps[1]},
-        }
+            snow_below_temp : -sigmoid(-radiated_heat, 4.13),
+            grass_within : [0.1,0.2],
+            trees_within : [0.1,0.3],
+        };
+        println!("w {:#?}", &w);
+        w
     }
 
     // (-1.0, 1.0)
@@ -192,16 +193,23 @@ impl World {
 
     fn temp_at(&self, pt : Point) -> f32 {
         let x = self.polarize_sample(globe_sample(&self.temp_nf, pt), pt[1]) * 0.5 + 0.5;
-        x * 0.1
-        + (1.0-self.height_at(pt)) * 0.9
+        x * 0.15
+        + (1.0-self.height_at(pt)) * 0.85
     }
 
     pub fn material_at(&self, pt : Point) -> Material {
         let temp = self.temp_at(pt);
         let height = self.height_at(pt);
-        if height < self.water_level {Material::Water}
-        else if temp < 0.4 {Material::Snow}
-        else if self.x_slope_at(pt).abs() + self.y_slope_at(pt).abs() > 0.1 {Material::DarkRock}
+        let slope = self.x_slope_at(pt).abs() + self.y_slope_at(pt).abs();
+        let veg_dist = (((temp - 0.3).abs() + 0.01) * (slope*20.0 + height) - self.snow_below_temp).abs();
+        // println!("{}, {}, {}", temp, height, slope);
+        if height < self.water_level {
+            if temp + 0.02 < self.snow_below_temp {Material::Ice}
+            else {Material::Water}
+        }
+        else if temp < self.snow_below_temp {Material::Snow}
+        else if slope > 0.1 {Material::DarkRock}
+        else if veg_dist  < 0.02 {Material::Grass}
         else {Material::Rock}
     }
 
@@ -246,7 +254,6 @@ impl World {
 
     fn pixel_sample(&self, pt : Point) -> U8Pixel {
         let height = self.height_at(pt);
-        // let pole_dist = 1.0 - (0.5 - pt[1]).abs() * 2.0;
         px_finalize(
             {
                 let mat = self.material_at(pt);
