@@ -10,6 +10,8 @@ mod procedural;
 mod world;
 use world::{WorldPrimitive,World};
 
+mod location;
+
 use self::rand::{SeedableRng,Rng,Isaac64Rng};
 pub type Point = [f32;2];
 pub type Point3D = [f32;3];
@@ -40,7 +42,7 @@ fn does(range : [u64;2]) ->  std::thread::JoinHandle<()> {
         for i in range[0]..range[1] {
             let wp = WorldPrimitive::new(rng.gen(), rng.gen(), rng.gen());
             let w = World::new(wp);
-            let x = w.to_png(Path::new(&format!("./map_{}.png", i)), 1000);
+            let x = w.to_png(Path::new(&format!("./map_{}.png", i)), 400);
             println!("{} : {:?}", i, x);
         }
     })

@@ -6,6 +6,8 @@ use super::{sigmoid,sig_0_pt5};
 
 extern crate image;
 
+use location::LocationPrimitive;
+
 
 const AZIMUTH_SHIFT : f32 = 0.006;
 const AZIMUTH_MULT : f32 = 1.0 - AZIMUTH_SHIFT;
@@ -13,21 +15,16 @@ const AZIMUTH_MULT : f32 = 1.0 - AZIMUTH_SHIFT;
 type FloatPixel = [f32 ; 3];
 type U8Pixel = [u8 ; 3];
 
-struct PointRawNoise {
-    base : f32,
-    complex : f32,
-    temp : f32,
+#[derive(Debug)]
+pub struct PointSampleData {
+    pub temp : f32,
+    pub height : f32,
+    pub x_slope : f32,
+    pub y_slope : f32,
+    pub slope : f32,
 }
 
-struct PointSampleData {
-    temp : f32,
-    height : f32,
-    x_slope : f32,
-    y_slope : f32,
-    slope : f32,
-}
-
-#[derive(PartialEq,Eq,Copy,Clone)]
+#[derive(PartialEq,Eq,Copy,Clone,Debug)]
 pub enum Material {
     Rock, Trees, Grass, Water, Ice, Snow, DarkRock,
 }
@@ -67,27 +64,6 @@ fn px_finalize(x : FloatPixel) -> U8Pixel {
     (px_bound(x[2]) * 254.0) as u8]
 }
 
-#[derive(Debug)]
-pub struct World {
-    base_height : NoiseField,
-    complex_height : NoiseField,
-    temp_nf : NoiseField,
-    water_level : f32,
-    // pole_heights : [f32;2],
-    snow_below_temp : f32,
-    grass_within : [f32;2],
-    trees_within : [f32;2],
-    size : f32,
-}
-
-// fn globe_sample(nf : &NoiseField, pt : Point) -> f32 {
-//     let x1 = pt[0] / 2.0;
-//     let x2 = x1 + 0.5;
-//     let y = pt[1] / 2.0;
-//     nf.sample([1.9*x1, y]) * pwr(x1)
-//     + nf.sample([1.9*x2, y]) * pwr(x2)
-// }
-
 #[derive(Copy,Clone,Debug)]
 pub struct WorldPrimitive {
     super_seed : u64,
@@ -107,6 +83,61 @@ impl WorldPrimitive {
 
 enum Weighting {
     Equal, Higher(f32), Lower(f32),
+}
+
+#[derive(Debug)]
+struct Zone {
+    tl : Point,
+    br : Point,
+    samples : Vec<(PointSampleData,Material)>,
+    samples_per_row : u8,
+}
+
+impl Zone {
+    fn barely_within(&self, pt : Point) -> bool {
+        //constructs another bogus zone on the spot which is just a smaller zone inside
+        let inner = Zone {
+            tl : [self.tl[0]*0.95 + self.br[0]*0.05,
+                  self.tl[1]*0.95 + self.br[1]*0.05],
+            br : [self.tl[0]*0.05 + self.br[0]*0.95,
+                  self.tl[1]*0.05 + self.br[1]*0.95],
+            samples : vec![],
+            samples_per_row : 99,
+        };
+        self.within(pt) && !inner.within(pt)
+    }
+
+    fn within(&self, other : Point) -> bool {
+        (self.tl[0] <= other[0] && other[0] <= self.br[0])
+        && (self.tl[1] <= other[1] && other[1] <= self.br[1])
+    }
+
+    fn overlaps_with(&self, other : (Point,Point)) -> bool { //other.0 == other.tl
+        ! {
+            //my left is right of your right
+            self.tl[0] > other.1[0]
+            //my right is left of your left
+            || self.br[0] < other.0[0]
+            //my top is below your bottom
+            || self.tl[1] > other.1[1]
+            //my bottom is above your top
+            || self.br[1] < other.0[1]
+
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct World {
+    base_height : NoiseField,
+    complex_height : NoiseField,
+    temp_nf : NoiseField,
+    water_level : f32,
+    snow_below_temp : f32,
+    grass_within : [f32;2],
+    trees_within : [f32;2],
+    size : f32,
+    zones : Vec<Zone>,
 }
 
 impl World {
@@ -129,24 +160,12 @@ impl World {
     pub fn new(wp : WorldPrimitive) -> World {
         let mut rng = Isaac64Rng::from_seed(&[wp.super_seed]);
 
-        let size = rng.gen::<f32>() * (0.2 + 0.8*wp.distance_to_star).powf(1.3);
+        let size = 0.2 + rng.gen::<f32>()*0.25*wp.distance_to_star;
         let radiated_heat = wp.star_energy * (1.0 - wp.distance_to_star);
         let water_level = sig_0_pt5(rng.gen::<f32>() - 0.5 + (size * (1.0 - radiated_heat)), 2.02);
-        println!("water lvl {:?}", water_level);
-
-        // let base_height_bounds = [
-        //     Self::gen_between(0.02, 0.03, Weighting::Lower(3.0), &mut rng) / (size + 0.4),
-        //     Self::gen_between(0.03, 0.04, Weighting::Lower(3.0), &mut rng) / (size + 0.4),
-        // ];
-
         let base_height_bounds = [
             Self::gen_between(0.05, 0.15, Weighting::Lower(3.0), &mut rng),
-            Self::gen_between(0.15, 3.0, Weighting::Lower(2.0), &mut rng),
-        ];
-
-        let complex_height_bounds = [
-            Self::gen_between(0.5, 0.8, Weighting::Lower(3.0), &mut rng),
-            Self::gen_between(3.5, 6.0, Weighting::Lower(2.0), &mut rng),
+            Self::gen_between(0.15, 1.4, Weighting::Lower(2.0), &mut rng),
         ];
 
         let base_height = NoiseField::generate(&mut rng, base_height_bounds, 4)
@@ -155,6 +174,11 @@ impl World {
         ).agglomerate(
             NoiseField::generate(&mut rng, [2.2, 9.4], 3), Some((1.0, 0.1))
         );
+
+        let complex_height_bounds = [
+            Self::gen_between(0.06, 0.4, Weighting::Lower(2.0), &mut rng),
+            Self::gen_between(2.5, 5.0, Weighting::Lower(1.2), &mut rng),
+        ];
 
         let complex_height = NoiseField::generate(&mut rng, complex_height_bounds, 4)
         .agglomerate(
@@ -165,43 +189,88 @@ impl World {
             NoiseField::generate(&mut rng, [0.8, 6.0], 2), Some((1.0, 0.25))
         );
 
-        // let pole_heights = [
-        //     Self::raw_sample(&base_height, [rng.gen(), 0.0]) * 0.5 + 0.5,
-        //     Self::raw_sample(&base_height, [rng.gen(), 1.0]) * 0.5 + 0.5,
-        // ];
-
-        // let temps : [f32;2] = ::array_init::array_init(|_| rng.gen::<f32>() * 5.0 - 2.0);
-        let w = World {
+        let mut w = World {
             size : size,
             base_height : base_height,
             complex_height : complex_height,
             temp_nf : temp_nf,
             water_level : water_level,
-            // pole_heights : pole_heights,
             snow_below_temp : -sigmoid(-radiated_heat, 4.13),
             grass_within : [0.1,0.2],
             trees_within : [0.1,0.3],
+            zones : Vec::new(),
         };
-        // println!("w {:#?}", &w);
+        w.populate_zones(&mut rng);
+        println!("got {:?} zones", w.zones.len());
+        // println!("world {:#?}", &w);
         w
     }
 
-    // fn raw_samples(&self, pt : Point) -> PointRawNoise {
-    //     PointRawNoise {
-    //         base : self.base_height.sample(pt),
-    //         complex : self.complex_height.sample(pt),
-    //         temp : self.temp_nf.sample(pt),
-    //     }
-    // }
+    fn zone_at(&self, pt : Point) -> Option<&Zone> {
+        for z in self.zones.iter() {
+            if z.within(pt) {
+                return Some(z);
+            }
+        }
+        None
+    }
 
-    // (-1.0, 1.0)
-    // fn raw_sample(nf : &NoiseField, pt : Point) -> f32 {
-    //     globe_sample(nf, pt)
-    // }
+    fn populate_zones<R:Rng>(&mut self, rng : &mut R) {
+        let distance_per_x_step = self.size * 0.1;
+        let distance_per_y_step = distance_per_x_step * 2.0;
+
+        let mut stop_when_zero : i16 = 500;
+        'outer: while stop_when_zero > 0 {
+            let tl = [rng.gen::<f32>()*0.9 + 0.05, rng.gen::<f32>()*0.9 + 0.05];
+            let (x_steps, y_steps) = (
+                rng.gen::<u8>() % 3 + 3,
+                rng.gen::<u8>() % 3 + 3,
+            );
+            let br = [tl[0] + x_steps as f32 * distance_per_x_step, tl[1] + y_steps as f32 * distance_per_y_step];
+            if br[0] > 0.95 || br[1] > 0.95 {
+                stop_when_zero -= 5;
+                continue 'outer;
+            }
+            for z in self.zones.iter() {
+                if z.overlaps_with((tl,br)){
+                    stop_when_zero -= 10;
+                    continue 'outer;
+                }
+            }
+            let mut samples = vec![];
+            let mut count_walkable_materials = 0;
+            for y in 0..y_steps {
+                for x in 0..x_steps {
+                    let (x_offset, y_offset) = (x as f32 * distance_per_x_step, y as f32 * distance_per_y_step);
+                    let pt = [tl[0] + x_offset, tl[1] + y_offset];
+                    let point_data = self.calc_sample_data_at(pt);
+                    let mat = self.material_at(pt, &point_data);
+                    match mat {
+                        Material::Water | Material::Ice => (),
+                        _ => count_walkable_materials += 1,
+                    }
+                    samples.push((point_data,mat));
+                }
+            }
+            if count_walkable_materials >= 3 {
+                // not too much ice|water
+                self.zones.push(
+                    Zone {
+                        tl : tl,
+                        br : br,
+                        samples : samples,
+                        samples_per_row : x_steps,
+                    }
+                );
+                stop_when_zero -= self.zones.len() as i16; //prevent overload
+            } else {
+                stop_when_zero -= 2;
+            }
+        }
+    }
 
     fn calc_temp_at(&self, pt : Point, height : f32) -> f32 {
         let x = self.temp_nf.sample_3d(equirectangular(pt)) * 0.5 + 0.5;
-        // let x = self.polarize_sample(globe_sample(&self.temp_nf, pt), pt[1]) * 0.5 + 0.5;
         x * 0.15
         + (1.0-height) * 0.85
         - sigmoid(self.size / (Self::pole_distance(pt[1]) + 0.01), 1.0) * 0.3
@@ -223,29 +292,19 @@ impl World {
     // (0.0, 1.0)
     fn calc_height_at(&self, pt : Point) -> f32 {
         let rough_sample = (self.base_height.sample_3d(equirectangular(pt)) * 0.5 + 0.5).powf(1.55);
-        // let rough_sample = (globe_sample(&self.base_height, pt) * 0.5 + 0.5).powf(1.55);
         if rough_sample > self.water_level {
             let fine_sample = self.complex_height.sample_3d(equirectangular(pt)) * 0.5 + 0.5;
-            // let fine_sample = globe_sample(&self.complex_height, pt) * 0.5 + 0.5;
             let fineness = rough_sample - self.water_level;
             fineness * fine_sample + (1.0 - fineness) * rough_sample
         } else {
             rough_sample
         }
-        // self.polarize_sample(non_polar_solution, pt[1])
     }
 
     fn pole_distance(y : f32) -> f32 {
         assert!(y <= 1.0 && y >= 0.0);
         if y < 0.5 {y} else {1.0-y}
     }
-
-    // fn polarize_sample(&self, sample : f32, y : f32) -> f32 {
-    //     let dist_to_pole = Self::pole_distance(y).powf(0.8);
-    //     let pole_weight = 1.0 - dist_to_pole*2.0;
-    //     pole_weight * (if y<0.5 {self.pole_heights[0]} else {self.pole_heights[1]})
-    //     + (1.0 - pole_weight) * sample
-    // }
 
     fn calc_sample_data_at(&self, pt : Point) -> PointSampleData {
         let height = self.calc_height_at(pt);
@@ -277,11 +336,15 @@ impl World {
     }
 
     fn pixel_sample(&self, pt : Point) -> U8Pixel {
+        for (k, v) in self.zones.iter().enumerate() {
+            if v.barely_within(pt) {
+                return [255,  (k as u8*21 + 200), (k as u8*31)];
+            }
+        }
         let point_data = self.calc_sample_data_at(pt);
         px_finalize(
             {
                 let mat = self.material_at(pt, &point_data);
-                // mat.col()
                 if mat == Material::Water || mat == Material::Ice {
                     px_shade(mat.col(), 0.25 + ((1.0-point_data.height) * 0.4))
                 } else {
@@ -309,23 +372,18 @@ impl World {
         let res = image::save_buffer(path, &pixels[..], pix_width, pix_height, image::RGBA(8));
         let time_2 = ::std::time::Instant::now();
         let (dur_0, dur_1) = (time_1-time_0, time_2-time_1);
-        // println!("{:?}/{:?} ratio: ({:?})", dur_0, dur_1, (dur_0.as_secs() as f32 / (dur_0+dur_1).as_secs() as f32));
         res
     }
 }
 
-// fn pwr(x : f32) -> f32 {
-//     assert!(x >= 0.0 && x <= 1.0);
-//     let out = 1.0 - 2.0 * (x - 0.5).abs();
-//     // println!("{} -> {}", x, out);
-//     out
-// }
+const HHH : f32 = 1.0;
 pub fn equirectangular(pt : Point) -> Point3D {
-    let q = 1.0 - (pt[1]*2.0 - 1.0).abs();
-    let l = pt[0] * ::std::f32::consts::PI * 2.0;
+    let (x, y) = (pt[0], pt[1]);
+    let latitude_radius = (1.0 - (y*2.0 - 1.0).abs()).powf(0.7);
+    let l = x * ::std::f32::consts::PI * 2.0;
     [
-        l.sin() * q,
-        l.cos() * q,
-        pt[1],
+        l.sin() * latitude_radius * HHH,
+        l.cos() * latitude_radius * HHH,
+        y * ::std::f32::consts::PI, //PI instead of 2PI to make it 2* wider
     ]
 }
