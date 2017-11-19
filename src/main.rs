@@ -12,6 +12,7 @@ use world::{WorldPrimitive,World};
 
 use self::rand::{SeedableRng,Rng,Isaac64Rng};
 pub type Point = [f32;2];
+pub type Point3D = [f32;3];
 
 use std::path::Path;
 
@@ -39,13 +40,19 @@ fn does(range : [u64;2]) ->  std::thread::JoinHandle<()> {
         for i in range[0]..range[1] {
             let wp = WorldPrimitive::new(rng.gen(), rng.gen(), rng.gen());
             let w = World::new(wp);
-            let x = w.to_png(Path::new(&format!("./map_{}.png", i)), 300);
+            let x = w.to_png(Path::new(&format!("./map_{}.png", i)), 1000);
             println!("{} : {:?}", i, x);
         }
     })
 }
 
 fn main() {
+    // for x in 0..10u8 {
+    //     for y in 0..10u8 {
+    //         let pt = [x as f32 / 10.0, y as f32 / 10.0];
+    //         println!("{:?} -> {:?}", pt, world::equirectangular(pt));
+    //     }
+    // }
     let seed = 2;
     let mut handles = vec![
         does([0, 50]),

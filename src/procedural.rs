@@ -1,6 +1,6 @@
 extern crate noise;
 use self::noise::{Perlin,Seedable,NoiseModule};
-use super::Point;
+use super::{Point,Point3D};
 use super::sigmoid;
 
 
@@ -71,8 +71,12 @@ impl NoiseField {
     }
 
     #[inline]
-    fn pt_map(pt : Point, zoom : f32) -> [f32;2] {
-        [pt[0] as f32 * zoom, pt[1] as f32 * zoom]
+    fn pt_map(pt : Point, zoom : f32) -> Point {
+        [pt[0] * zoom, pt[1] * zoom]
+    }
+
+    fn pt3d_map(pt : Point3D, zoom : f32) -> Point3D {
+        [pt[0] * zoom, pt[1] * zoom, pt[2] * zoom]
     }
 
     pub fn agglomerate(self, other : NoiseField, relative_multipliers : Option<(f32, f32)>) -> NoiseField {
@@ -96,6 +100,17 @@ impl NoiseField {
             sample_tot +=
                 pu.p1.get(Self::pt_map(pt, pu.zoom1))
                 * pu.p2.get(Self::pt_map(pt, pu.zoom2))
+                * pu.mult;
+        }
+        sigmoid(sample_tot, self.perlin_units.len() as f32)
+    }
+
+    pub fn sample_3d(&self, pt : Point3D) -> f32 {
+        let mut sample_tot : f32 = 0.0;
+        for pu in self.perlin_units.iter() {
+            sample_tot +=
+                pu.p1.get(Self::pt3d_map(pt, pu.zoom1))
+                * pu.p2.get(Self::pt3d_map(pt, pu.zoom2))
                 * pu.mult;
         }
         sigmoid(sample_tot, self.perlin_units.len() as f32)
