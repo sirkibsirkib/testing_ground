@@ -4,6 +4,10 @@ use ::rand::{SeedableRng,Rng,Isaac64Rng};
 use std::path::Path;
 use super::{sigmoid,sig_0_pt5};
 
+pub mod zones;
+
+use self::zones::{Zone,WorldLink};
+
 extern crate image;
 
 use location::LocationPrimitive;
@@ -30,6 +34,13 @@ pub enum Material {
 }
 
 impl Material {
+    fn allow_link_to(self, other : Material) -> bool {
+        if self == Material::Water {
+            other == Material::Water
+        } else {
+            other != Material::Water
+        }
+    }
     fn col(&self) -> FloatPixel {
         match self {
             &Material::Rock => [0.5, 0.37, 0.24],
@@ -43,6 +54,13 @@ impl Material {
     }
 }
 
+fn px_bleach(x : FloatPixel, bleaching : f32) -> FloatPixel {
+    [
+        x[0] + ((1.0-x[0]) * bleaching),
+        x[1] + ((1.0-x[1]) * bleaching),
+        x[2] + ((1.0-x[2]) * bleaching),
+    ]
+}
 
 fn px_shade(x : FloatPixel, shading : f32) -> FloatPixel {
     [
@@ -86,48 +104,6 @@ enum Weighting {
 }
 
 #[derive(Debug)]
-struct Zone {
-    tl : Point,
-    br : Point,
-    samples : Vec<(PointSampleData,Material)>,
-    samples_per_row : u8,
-}
-
-impl Zone {
-    fn barely_within(&self, pt : Point) -> bool {
-        //constructs another bogus zone on the spot which is just a smaller zone inside
-        let inner = Zone {
-            tl : [self.tl[0]*0.95 + self.br[0]*0.05,
-                  self.tl[1]*0.95 + self.br[1]*0.05],
-            br : [self.tl[0]*0.05 + self.br[0]*0.95,
-                  self.tl[1]*0.05 + self.br[1]*0.95],
-            samples : vec![],
-            samples_per_row : 99,
-        };
-        self.within(pt) && !inner.within(pt)
-    }
-
-    fn within(&self, other : Point) -> bool {
-        (self.tl[0] <= other[0] && other[0] <= self.br[0])
-        && (self.tl[1] <= other[1] && other[1] <= self.br[1])
-    }
-
-    fn overlaps_with(&self, other : (Point,Point)) -> bool { //other.0 == other.tl
-        ! {
-            //my left is right of your right
-            self.tl[0] > other.1[0]
-            //my right is left of your left
-            || self.br[0] < other.0[0]
-            //my top is below your bottom
-            || self.tl[1] > other.1[1]
-            //my bottom is above your top
-            || self.br[1] < other.0[1]
-
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct World {
     base_height : NoiseField,
     complex_height : NoiseField,
@@ -138,9 +114,12 @@ pub struct World {
     trees_within : [f32;2],
     size : f32,
     zones : Vec<Zone>,
+    links : Vec<WorldLink>
 }
 
 impl World {
+    pub fn get_size(&self) -> f32 {self.size}
+
     fn gen_between<R:Rng>(lower : f32, upper : f32, w : Weighting, rng : &mut R) -> f32 {
         let betweenyness = match w {
             self::Weighting::Equal => {
@@ -157,7 +136,7 @@ impl World {
         + upper * (1.0 - betweenyness)
     }
 
-    pub fn new(wp : WorldPrimitive) -> World {
+    pub fn new<'b>(wp : WorldPrimitive) -> World {
         let mut rng = Isaac64Rng::from_seed(&[wp.super_seed]);
 
         let size = 0.2 + rng.gen::<f32>()*0.25*wp.distance_to_star;
@@ -199,74 +178,16 @@ impl World {
             grass_within : [0.1,0.2],
             trees_within : [0.1,0.3],
             zones : Vec::new(),
+            links : Vec::new(),
         };
-        w.populate_zones(&mut rng);
+        w.zones = zones::generate_zones_for(&w, &mut rng);
         println!("got {:?} zones", w.zones.len());
-        // println!("world {:#?}", &w);
+        {
+            w.links = zones::generate_links_for(&w.zones, &mut rng);
+            println!("({:?}) links : {:#?}", w.links.len(), &w.links);
+            println!();
+        }
         w
-    }
-
-    fn zone_at(&self, pt : Point) -> Option<&Zone> {
-        for z in self.zones.iter() {
-            if z.within(pt) {
-                return Some(z);
-            }
-        }
-        None
-    }
-
-    fn populate_zones<R:Rng>(&mut self, rng : &mut R) {
-        let distance_per_x_step = self.size * 0.1;
-        let distance_per_y_step = distance_per_x_step * 2.0;
-
-        let mut stop_when_zero : i16 = 500;
-        'outer: while stop_when_zero > 0 {
-            let tl = [rng.gen::<f32>()*0.9 + 0.05, rng.gen::<f32>()*0.9 + 0.05];
-            let (x_steps, y_steps) = (
-                rng.gen::<u8>() % 3 + 3,
-                rng.gen::<u8>() % 3 + 3,
-            );
-            let br = [tl[0] + x_steps as f32 * distance_per_x_step, tl[1] + y_steps as f32 * distance_per_y_step];
-            if br[0] > 0.95 || br[1] > 0.95 {
-                stop_when_zero -= 5;
-                continue 'outer;
-            }
-            for z in self.zones.iter() {
-                if z.overlaps_with((tl,br)){
-                    stop_when_zero -= 10;
-                    continue 'outer;
-                }
-            }
-            let mut samples = vec![];
-            let mut count_walkable_materials = 0;
-            for y in 0..y_steps {
-                for x in 0..x_steps {
-                    let (x_offset, y_offset) = (x as f32 * distance_per_x_step, y as f32 * distance_per_y_step);
-                    let pt = [tl[0] + x_offset, tl[1] + y_offset];
-                    let point_data = self.calc_sample_data_at(pt);
-                    let mat = self.material_at(pt, &point_data);
-                    match mat {
-                        Material::Water | Material::Ice => (),
-                        _ => count_walkable_materials += 1,
-                    }
-                    samples.push((point_data,mat));
-                }
-            }
-            if count_walkable_materials >= 3 {
-                // not too much ice|water
-                self.zones.push(
-                    Zone {
-                        tl : tl,
-                        br : br,
-                        samples : samples,
-                        samples_per_row : x_steps,
-                    }
-                );
-                stop_when_zero -= self.zones.len() as i16; //prevent overload
-            } else {
-                stop_when_zero -= 2;
-            }
-        }
     }
 
     fn calc_temp_at(&self, pt : Point, height : f32) -> f32 {
@@ -336,6 +257,15 @@ impl World {
     }
 
     fn pixel_sample(&self, pt : Point) -> U8Pixel {
+
+        for l in self.links.iter() {
+            if point_is_wider_roughly_between(l.get_world_a_pt(), pt, l.get_world_b_pt()) {
+                return px_finalize(px_bleach({
+                    if pt_wider_dist(l.get_world_a_pt(), pt) < pt_wider_dist(l.get_world_b_pt(), pt)
+                    {l.get_mat_a()} else {l.get_mat_b()}
+                }.col(), 0.3));
+            }
+        }
         for (k, v) in self.zones.iter().enumerate() {
             if v.barely_within(pt) {
                 return [255,  (k as u8*21 + 200), (k as u8*31)];
@@ -374,6 +304,29 @@ impl World {
         let (dur_0, dur_1) = (time_1-time_0, time_2-time_1);
         res
     }
+}
+
+fn pt_wider_dist(a: Point, b: Point) -> f32 {
+    let x = (a[0] - b[0]) * 2.0;
+    let y = a[1] - b[1];
+    (x*x + y*y).powf(0.5)
+}
+
+fn pt_dist(a: Point, b: Point) -> f32 {
+    let x = a[0] - b[0];
+    let y = a[1] - b[1];
+    (x*x + y*y).powf(0.5)
+}
+
+// Return whether b is between a and c, allowing for distance epsilon
+fn point_is_wider_roughly_between(a : Point, b : Point, c : Point) -> bool {
+    use ::std::cmp::{min,max};
+    let ab = pt_wider_dist(a,b);
+    let bc = pt_wider_dist(b,c);
+    let zoop = if ab < bc {ab} else {bc};
+    let zoop = if zoop < 0.0000001 {0.0000001} else {zoop};
+    ab+bc <= pt_wider_dist(a,c) + (0.000001) / zoop.powi(2)
+    //epsilon/100000.0/max_three(sigmoid(ab*100.0, 1.9),sigmoid(bc*100.0, 1.9),0.0000001)
 }
 
 const HHH : f32 = 1.0;
