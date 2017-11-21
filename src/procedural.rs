@@ -5,7 +5,7 @@ use super::sigmoid;
 
 
 extern crate rand;
-use self::rand::{SeedableRng,Rng,Isaac64Rng};
+use self::rand::{Rng,Isaac64Rng};
 
 const NUM_PERLINS : usize = 50;
 

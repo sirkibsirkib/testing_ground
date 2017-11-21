@@ -1,7 +1,7 @@
 
 use super::{Point,Material,PointSampleData,World,pt_wider_dist};
-use::rand::{SeedableRng,Rng,Isaac64Rng};
-use std::collections::{HashSet,HashMap};
+use::rand::{Rng};
+use std::collections::{HashMap};
 
 #[derive(Debug)]
 pub struct ZoneSample {
@@ -18,9 +18,37 @@ pub struct Zone {
 }
 
 
-impl Zone {
+fn traversible_link(zones: &Vec<Zone>, a: Point, b: Point, by_land: bool, w: &World) -> bool {
+    let pt_checks : u8 = (pt_wider_dist(a, b)*30.0) as u8;
+    for c in 0..pt_checks {
+        let a_ratio = (c+1) as f32 / (pt_checks + 1) as f32;
+        let b_ratio = 1.0 - a_ratio;
+        let checked_pt = [
+            a[0]*a_ratio + b[0]*b_ratio,
+            a[1]*a_ratio + b[1]*b_ratio,
+        ];
 
-    fn samples_per_col(&self) -> Option<u8> {
+        let mat = w.material_at(checked_pt, &w.calc_sample_data_at(checked_pt));
+        if by_land != mat.is_land() {
+            // water in way / land in way
+            return false;
+        }
+        for z in zones.iter() {
+            if z.within(checked_pt){
+                //The link crosses some other zone!
+                return false;
+            }
+        }
+    }
+    true
+}
+
+impl Zone {
+    pub fn get_samples_per_row(&self) -> u8 {
+        self.samples_per_row
+    }
+
+    pub fn get_samples_per_col(&self) -> Option<u8> {
         let x = self.samples.keys().len() / (self.samples_per_row as usize);
         if x*(self.samples_per_row as usize) == self.samples.len() && x <= 255 {
             Some(x as u8)
@@ -33,12 +61,12 @@ impl Zone {
     pub fn coord_is_right(&self, c : Coord) -> bool {c[0] == self.samples_per_row-1}
     pub fn coord_is_top(&self, c : Coord) -> bool {c[1] == 0}
     pub fn coord_is_bottom(&self, c : Coord) -> bool {
-        c[1] == self.samples_per_col().expect("Not divisible!")-1
+        c[1] == self.get_samples_per_col().expect("Not divisible!")-1
     }
 
     pub fn coord_is_edge(&self, c : Coord) -> bool {
         self.coord_is_left(c)
-        || self.coord_is_left(c)
+        || self.coord_is_right(c)
         || self.coord_is_top(c)
         || self.coord_is_bottom(c)
     }
@@ -57,19 +85,13 @@ impl Zone {
         )
     }
 
-    fn sample_grid_pos(&self, sample_in_vec: usize) -> [u8;2] {
-        [
-            (sample_in_vec % self.samples_per_row as usize) as u8,
-            (sample_in_vec / self.samples_per_row as usize) as u8,
-        ]
-    }
-
-    pub fn shortest_sample_link(
+    fn shortest_sample_link(
         &self,
         self_taken: &[Coord],
         other: &Zone,
         other_taken: &[Coord],
-        allow_water: bool,
+        zones: &Vec<Zone>,
+        w: &World,
     ) -> Option<WorldLink> {
         let mut shortest: Option<WorldLink> = None;
         for (m_coord, my_sample) in self.boundary_sample_iter() {
@@ -79,10 +101,10 @@ impl Zone {
                 let dist = pt_wider_dist(my_sample.pt, their_sample.pt);
 
                 //only allow links where the material allows for it
-                if ! my_sample.mat.allow_link_to(their_sample.mat)
+                if my_sample.mat.is_land() != their_sample.mat.is_land()
                 || dist > WorldLink::MAX_LEN
-                || (my_sample.mat == Material::Water && !allow_water) {
-                    continue
+                || ! traversible_link(zones,  my_sample.pt, their_sample.pt, my_sample.mat.is_land(), w) {
+                    continue;
                 }
 
                 if let Some(ref previous) = shortest {
@@ -95,6 +117,7 @@ impl Zone {
                     world_b_pt: their_sample.pt,
                     mat_a: my_sample.mat,
                     mat_b: their_sample.mat,
+                    land_link: their_sample.mat.is_land(),
                 });
             }
         }
@@ -146,7 +169,7 @@ impl Zone {
 impl::std::fmt::Debug for Zone {
     fn fmt(&self, f: &mut::std::fmt::Formatter) -> Result<(),::std::fmt::Error> {
         write!(f, "tl:{:?}, br:{:?}, ({},{})",
-            self.tl, self.br, self.samples_per_row, self.samples_per_col().unwrap()
+            self.tl, self.br, self.samples_per_row, self.get_samples_per_col().unwrap()
         )
     }
 }
@@ -166,12 +189,13 @@ pub fn generate_zones_for<R:Rng>(w: &World, rng: &mut R) -> Vec<Zone> {
         // (steps-1) to make sure the last sample points are ON the right/bottom edges
         let br = [tl[0] + (x_steps-1) as f32 * distance_per_x_step, tl[1] + (y_steps-1) as f32 * distance_per_y_step];
         if br[0] > 0.95 || br[1] > 0.95 {
-            stop_when_zero -= 5;
+            stop_when_zero -= 1;
             continue 'outer;
         }
         for z in zones.iter() {
             if z.overlaps_with((tl,br)){
-                stop_when_zero -= 10;
+                //OVERLAP
+                stop_when_zero -= 7;
                 continue 'outer;
             }
         }
@@ -196,15 +220,18 @@ pub fn generate_zones_for<R:Rng>(w: &World, rng: &mut R) -> Vec<Zone> {
             zones.push(
                 Zone::new(tl, br, samples, x_steps)
             );
-            stop_when_zero -= zones.len() as i16; //prevent overload
+            stop_when_zero -= zones.len() as i16 + 1; //prevent overload
         } else {
             stop_when_zero -= 2;
         }
+        if zones.len() >= 3 {stop_when_zero -= 2}
+        if zones.len() >= 5 {stop_when_zero -= 4}
+        if zones.len() >= 7 {stop_when_zero -= 10}
     }
     zones
 }
 
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone,PartialEq)]
 pub struct WorldLink {
     zone_a_coord: Coord,
     zone_b_coord: Coord,
@@ -212,6 +239,7 @@ pub struct WorldLink {
     world_b_pt: Point,
     mat_a: Material,
     mat_b: Material,
+    land_link: bool,
 }
 
 
@@ -225,7 +253,7 @@ fn inside_slice<T: PartialEq>(x: &T, slice: &[T]) -> bool {
 type Coord = [u8;2];
 
 impl WorldLink {
-    const MAX_LEN : f32 = 0.18;
+    const MAX_LEN : f32 = 0.17;
     pub fn length(&self) -> f32 {
         pt_wider_dist(self.world_a_pt, self.world_b_pt)
     }
@@ -235,38 +263,23 @@ impl WorldLink {
     pub fn get_mat_b(&self) -> Material{self.mat_b}
 }
 
-pub fn generate_links_for<R:Rng>(zones: &Vec<Zone>, rng: &mut R) -> Vec<WorldLink> {
+pub fn generate_links_for<R:Rng>(zones: &Vec<Zone>, rng: &mut R, w : &World) -> Vec<WorldLink> {
     let mut z : Vec<_> = zones.iter().collect();
     rng.shuffle(&mut z);
     let mut links: Vec<WorldLink> = vec![];
     let mut taken_samples: Vec<Vec<Coord>> = zones.iter().map(|_| vec![]).collect();
-    let mut water_links = 0;
     for (i, zone_i) in zones.iter().enumerate() {
         'pair_loop: for (j, zone_j) in zones.iter().enumerate().skip(i+1) {
             if let Some(shortest) = zone_i.shortest_sample_link(
-                &taken_samples[i], zone_j, &taken_samples[j], water_links <= links.len()/2
+                &taken_samples[i], zone_j, &taken_samples[j], zones, w
             ) {
+                if rng.gen_weighted_bool(6) {
+                    // ignore connections randomly
+                    continue
+                }
                 if shortest.length() <= WorldLink::MAX_LEN {
-                    let pt_checks : u8 = (shortest.length()*50.0) as u8;
-                    println!("checks {:?}", pt_checks);
-                    for c in 0..pt_checks {
-                        let a_ratio = (c+1) as f32 / (pt_checks + 1) as f32;
-                        let b_ratio = 1.0 - a_ratio;
-                        let checked_pt = [
-                            shortest.world_a_pt[0]*a_ratio + shortest.world_b_pt[0]*b_ratio,
-                            shortest.world_a_pt[1]*a_ratio + shortest.world_b_pt[1]*b_ratio,
-                        ];
-
-                        for z in zones.iter() {
-                            if z.within(checked_pt) {
-                                //The link crosses some other zone!
-                                continue 'pair_loop
-                            }
-                        }
-                    }
                     taken_samples[i].push(shortest.zone_a_coord);
                     taken_samples[j].push(shortest.zone_b_coord);
-                    if shortest.get_mat_a() == Material::Water {water_links += 1}
                     links.push(shortest);
                 }
             }
