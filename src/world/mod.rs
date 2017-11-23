@@ -1,5 +1,5 @@
 use super::procedural::NoiseField;
-use super::{Point,Point3D};
+use ::points::*;
 use ::rand::{SeedableRng,Rng,Isaac64Rng};
 use std::path::Path;
 use super::{sigmoid,sig_0_pt5};
@@ -7,12 +7,11 @@ use super::{sigmoid,sig_0_pt5};
 pub mod zones;
 pub mod grid;
 mod location;
+use super::portals::UniquePoint;
 use self::location::LocationPrimitive;
 use self::zones::{Zone,WorldLink};
 
 extern crate image;
-
-
 
 const AZIMUTH_SHIFT: f32 = 0.006;
 const AZIMUTH_MULT: f32 = 1.0 - AZIMUTH_SHIFT;
@@ -31,7 +30,7 @@ pub struct PointSampleData {
 
 #[derive(PartialEq,Eq,Copy,Clone,Debug)]
 pub enum Material {
-    Rock, Trees, Grass, Water, Ice, Snow, DarkRock
+    Rock, Trees, Grass, Water, Ice, Snow, DarkRock, Sand,
 }
 
 impl Material {
@@ -47,6 +46,7 @@ impl Material {
             &Material::Water => [0.3, 0.5, 1.0],
             &Material::Ice => [1.0, 1.0, 1.3],
             &Material::Snow => [1.15, 1.15, 1.2],
+            &Material::Sand => [1.0, 0.95, 0.8],
         }
     }
 }
@@ -114,10 +114,10 @@ pub struct World {
     zones: Vec<Zone>,
     links: Vec<WorldLink>,
     wp: WorldPrimitive,
+    exit_points: Vec<UniquePoint>,
 }
 
 impl World {
-    pub fn generate_locations_from()
 
     pub fn get_size(&self) -> f32 {self.size}
 
@@ -180,6 +180,7 @@ impl World {
             trees_within: [0.1,0.3],
             zones: Vec::new(),
             links: Vec::new(),
+            exit_points: Vec::new(),
             wp: wp,
         };
         w.zones = zones::generate_zones_for(&w, &mut rng);
@@ -187,14 +188,14 @@ impl World {
         w
     }
 
-    fn calc_temp_at(&self, pt: Point, height: f32) -> f32 {
+    fn calc_temp_at(&self, pt: CPoint2, height: f32) -> f32 {
         let x = self.temp_nf.sample_3d(equirectangular(pt)) * 0.5 + 0.5;
         x * 0.15
         + (1.0-height) * 0.85
-        - sigmoid(self.size / (Self::pole_distance(pt[1]) + 0.01), 1.0) * 0.3
+        - sigmoid(self.size / (Self::pole_distance(pt.y) + 0.01), 1.0) * 0.3
     }
 
-    fn material_at(&self, pt: Point, point_data: &PointSampleData) -> Material {
+    fn material_at(&self, pt: CPoint2, point_data: &PointSampleData) -> Material {
         let veg_dist = (((point_data.temp - 0.3).abs() + 0.01) * (point_data.slope*20.0 + point_data.height) - self.snow_below_temp).abs();
         if point_data.height < self.water_level {
             if point_data.temp + 0.02 < self.snow_below_temp {Material::Ice}
@@ -208,7 +209,7 @@ impl World {
     }
 
     // (0.0, 1.0)
-    fn calc_height_at(&self, pt: Point) -> f32 {
+    fn calc_height_at(&self, pt: CPoint2) -> f32 {
         let rough_sample = (self.base_height.sample_3d(equirectangular(pt)) * 0.5 + 0.5).powf(1.55);
         if rough_sample > self.water_level {
             let fine_sample = self.complex_height.sample_3d(equirectangular(pt)) * 0.5 + 0.5;
@@ -224,25 +225,26 @@ impl World {
         if y < 0.5 {y} else {1.0-y}
     }
 
-    fn calc_sample_data_at(&self, pt: Point) -> PointSampleData {
+    fn calc_sample_data_at(&self, pt: CPoint2) -> PointSampleData {
         let height = self.calc_height_at(pt);
         let x_slope = {
             sigmoid(
-                (height - self.calc_height_at([(pt[0]+AZIMUTH_SHIFT % 1.0), pt[1]])) * 0.5,
+                (height - self.calc_height_at(CPoint2::new((pt.x+AZIMUTH_SHIFT % 1.0), pt.y))) * 0.5,
                 30.0,
             )
         };
         let y_slope = {
             sigmoid(
-                if pt[1] < AZIMUTH_MULT {
-                    (height - self.calc_height_at([pt[0], pt[1]+AZIMUTH_SHIFT])) * 0.5
+                if pt.y < AZIMUTH_MULT {
+                    (height - self.calc_height_at(CPoint2::new(pt.x, pt.y+AZIMUTH_SHIFT))) * 0.5
                 } else {
-                    (self.calc_height_at([pt[0], pt[1]-AZIMUTH_SHIFT]) - height) * 0.5
+                    (self.calc_height_at(CPoint2::new(pt.x, pt.y-AZIMUTH_SHIFT)) - height) * 0.5
                 },
                 30.0,
             )
         };
         let slope = (x_slope.abs() + y_slope.abs()) * 0.5;
+
         let temp = self.calc_temp_at(pt, height);
         PointSampleData {
             height: height,
@@ -253,8 +255,7 @@ impl World {
         }
     }
 
-    fn pixel_sample(&self, pt: Point) -> U8Pixel {
-
+    fn pixel_sample(&self, pt: CPoint2) -> U8Pixel {
         for l in self.links.iter() {
             if point_is_wider_roughly_between(l.get_world_a_pt(), pt, l.get_world_b_pt()) {
                 return px_finalize(px_bleach({
@@ -267,7 +268,11 @@ impl World {
             if v.barely_within(pt) {
                 return [255,  (k as u8*21 + 200), (k as u8*31)];
             }
+            if v.close_to_cell(pt) {
+                return [255,  0, 0];
+            }
         }
+
         let point_data = self.calc_sample_data_at(pt);
         px_finalize(
             {
@@ -289,7 +294,9 @@ impl World {
         let time_0 = ::std::time::Instant::now();
         for y in 0..pix_height {
             for x in 0..pix_width {
-                for u_eight in self.pixel_sample([x as f32 / f_width, y as f32 / f_height]).into_iter() {
+                for u_eight in self.pixel_sample(
+                    CPoint2::new(x as f32 / f_width, y as f32 / f_height)
+                ).into_iter() {
                     pixels.push(*u_eight);
                 }
                 pixels.push(255); //a
@@ -303,21 +310,19 @@ impl World {
     }
 }
 
-fn pt_wider_dist(a: Point, b: Point) -> f32 {
-    let x = (a[0] - b[0]) * 2.0;
-    let y = a[1] - b[1];
-    (x*x + y*y).powf(0.5)
+fn pt_wider_dist(a: CPoint2, b: CPoint2) -> f32 {
+    a.skewed_dist_to(b, 2.0, 1.0)
 }
 
-// fn pt_dist(a: Point, b: Point) -> f32 {
+// fn pt_dist(a: CPoint2, b: CPoint2) -> f32 {
 //     let x = a[0] - b[0];
 //     let y = a[1] - b[1];
 //     (x*x + y*y).powf(0.5)
 // }
 
 // Return whether b is between a and c, allowing for distance epsilon
-fn point_is_wider_roughly_between(a: Point, b: Point, c: Point) -> bool {
-    use ::std::cmp::{max};
+fn point_is_wider_roughly_between(a: CPoint2, b: CPoint2, c: CPoint2) -> bool {
+    // use ::std::cmp::{max};
     let ab = pt_wider_dist(a,b);
     let bc = pt_wider_dist(b,c);
     let zoop = if ab < bc {ab} else {bc};
@@ -327,13 +332,13 @@ fn point_is_wider_roughly_between(a: Point, b: Point, c: Point) -> bool {
 }
 
 const HHH: f32 = 1.0;
-pub fn equirectangular(pt: Point) -> Point3D {
-    let (x, y) = (pt[0], pt[1]);
+pub fn equirectangular(pt: CPoint2) -> CPoint3 {
+    let (x, y) = (pt.x, pt.y);
     let latitude_radius = (1.0 - (y*2.0 - 1.0).abs()).powf(0.7);
     let l = x * ::std::f32::consts::PI * 2.0;
-    [
+    CPoint3::new(
         l.sin() * latitude_radius * HHH,
         l.cos() * latitude_radius * HHH,
         y * ::std::f32::consts::PI, //PI instead of 2PI to make it 2* wider
-    ]
+    )
 }

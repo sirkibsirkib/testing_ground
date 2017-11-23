@@ -5,14 +5,18 @@ extern crate rand;
 extern crate noise;
 
 // mod asciireen;
+
 // use asciireen::Asciireen;
 mod procedural;
 mod world;
+mod portals;
+mod points;
 use world::{WorldPrimitive,World};
-
+use points::*;
 use self::rand::{SeedableRng,Rng,Isaac64Rng};
-pub type Point = [f32;2];
-pub type Point3D = [f32;3];
+
+
+pub type LocationID = u64;
 
 use std::path::Path;
 
@@ -26,7 +30,7 @@ fn sig_0_pt5(x : f32, amplifier : f32) -> f32 {
     sigmoid(x * 2.0 - 1.0, amplifier) * 0.5 + 0.5
 }
 
-use std::thread;
+// use std::thread;
 
 // const MEGA : u64 = 10;
 //
@@ -42,6 +46,7 @@ use std::thread;
 //     })
 // }
 
+
 fn main() {
     // for x in 0..10u8 {
     //     for y in 0..10u8 {
@@ -49,7 +54,7 @@ fn main() {
     //         println!("{:?} -> {:?}", pt, world::equirectangular(pt));
     //     }
     // }
-    let mut rng = Isaac64Rng::from_seed(&[0]);
+    let mut rng = Isaac64Rng::from_seed(&[3]);
     let wp = WorldPrimitive::new(rng.gen(), rng.gen(), rng.gen());
     let w = World::new(wp);
     w.to_png(Path::new("./map.png"), 400).is_ok();

@@ -1,0 +1,89 @@
+define Traits:
+    trait IsLocation {
+        fn get_lid() -> LocationID;
+    }
+
+    trait Primitive<T,Diff> {
+        generate_new(&self) -> T;
+        generate_diffed(&self, &Vec<Self::Diff>) -> T {
+
+        }
+    }
+
+    trait AppliesDiff<T> {
+        fn apply(&mut self, t : &T);
+    }
+
+    trait DiffFor<T> {
+        fn apply_to(&self, &mut x) {
+
+        }
+    }
+
+
+define Primitives:
+    struct InteriorPrimitive {
+        seed,
+        ?? temp
+        ?? race
+        ?? size
+    }
+
+    struct LocationPrimitive {
+        lid : LocationID,
+        seed : u64,
+        samples : TotalGrid<WorldSample>,
+        wc : WorldConditions,
+        portals : Vec<(DPoint, Portal)>     //portals to structures and other zones
+        world_portal : Portal::Continuous,  //portal to the World
+    }
+
+    WorldPrimitive {
+        lid : LocationID,
+        seed : u64,                 //determines noise fields.
+        zones : Vec<Zone>
+        wc : WorldConditions,
+        portals : (CPoint, Portal)
+    }
+    // determines PNG
+    // CAN determine zones, but
+
+
+helpers:
+    struct NoiseField {
+        //omitted
+    }
+
+    enum Portal {
+        Discrete(x,y,LocationID),   //enter LocationID at pos (x,y)
+        Continuous(x,y,LocationID), //enter LocationID at pos (x,y)
+        Nonspecific(LocationID),    //enter LocationID
+    }
+
+    enum Material {
+        Water,Rock,DarkRock,Ice,Snow,Trees,Grass
+    }
+
+    struct WorldSample {
+        temp: f32,
+        height: f32,
+        x_slope: f32,
+        y_slope: f32,
+        material: Material
+    }
+
+    struct WorldConditions {
+        size : f32,
+        sun_power : f32,
+    }
+
+both_sides:
+    WorldPrimitive -> World
+    (WorldPrimitive, Vec<Diff>) -> World
+
+server_size_only:
+    WorldGenerator
+        (WorldConditions, seed) -> (WorldPrimitive, World)
+    SaverLoader
+        save(&World) -> Ok()
+        save(&Location) -> Ok()

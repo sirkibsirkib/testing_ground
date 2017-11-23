@@ -1,32 +1,30 @@
 
-use super::{Point,Material,PointSampleData,World,pt_wider_dist};
+use super::{Material,PointSampleData,World,pt_wider_dist};
+use super::grid::{TotalGrid,TotalGridBuilder};
+use ::points::*;
 use::rand::{Rng};
 use std::collections::{HashMap};
 
 #[derive(Debug)]
 pub struct ZoneSample {
-    pt: Point,
+    pt: CPoint2,
     data: PointSampleData,
     mat: Material,
 }
 
 pub struct Zone {
-    tl: Point,
-    br: Point,
-    samples: HashMap<Coord, ZoneSample>,
-    samples_per_row: u8,
+    tl: CPoint2,
+    br: CPoint2,
+    samples: TotalGrid<ZoneSample>,
 }
 
 
-fn traversible_link(zones: &Vec<Zone>, a: Point, b: Point, by_land: bool, w: &World) -> bool {
+fn traversible_link(zones: &Vec<Zone>, a: CPoint2, b: CPoint2, by_land: bool, w: &World) -> bool {
     let pt_checks : u8 = (pt_wider_dist(a, b)*30.0) as u8;
     for c in 0..pt_checks {
         let a_ratio = (c+1) as f32 / (pt_checks + 1) as f32;
         let b_ratio = 1.0 - a_ratio;
-        let checked_pt = [
-            a[0]*a_ratio + b[0]*b_ratio,
-            a[1]*a_ratio + b[1]*b_ratio,
-        ];
+        let checked_pt = a.scale(a_ratio) + b.scale(b_ratio);
 
         let mat = w.material_at(checked_pt, &w.calc_sample_data_at(checked_pt));
         if by_land != mat.is_land() {
@@ -44,52 +42,54 @@ fn traversible_link(zones: &Vec<Zone>, a: Point, b: Point, by_land: bool, w: &Wo
 }
 
 impl Zone {
-    pub fn get_samples_per_row(&self) -> u8 {
-        self.samples_per_row
+    pub fn get_samples_per_row(&self) -> i32 {
+        self.samples.get_width()
     }
 
-    pub fn get_samples_per_col(&self) -> Option<u8> {
-        let x = self.samples.keys().len() / (self.samples_per_row as usize);
-        if x*(self.samples_per_row as usize) == self.samples.len() && x <= 255 {
-            Some(x as u8)
-        } else {
-            None
+    pub fn get_samples_per_col(&self) -> i32 {
+        self.samples.get_height()
+    }
+
+    pub fn close_to_cell(&self, pt: CPoint2) -> bool {
+        for (k, v) in (self.samples).into_iter() {
+            if v.pt.skewed_dist_to(pt, 2.0, 1.0) < 0.003 {
+                return true
+            }
         }
+        false
     }
 
-    pub fn coord_is_left(&self, c : Coord) -> bool {c[0] == 0}
-    pub fn coord_is_right(&self, c : Coord) -> bool {c[0] == self.samples_per_row-1}
-    pub fn coord_is_top(&self, c : Coord) -> bool {c[1] == 0}
-    pub fn coord_is_bottom(&self, c : Coord) -> bool {
-        c[1] == self.get_samples_per_col().expect("Not divisible!")-1
-    }
+    pub fn coord_is_left(&self, c : DPoint2) -> bool {c.x == 0}
+    pub fn coord_is_right(&self, c : DPoint2) -> bool {c.x == (self.samples.get_width() as i32)-1}
+    pub fn coord_is_top(&self, c : DPoint2) -> bool {c.y == 0}
+    pub fn coord_is_bottom(&self, c : DPoint2) -> bool {c.y == (self.samples.get_height() as i32)-1}
 
-    pub fn coord_is_edge(&self, c : Coord) -> bool {
+    pub fn coord_is_edge(&self, c : DPoint2) -> bool {
         self.coord_is_left(c)
         || self.coord_is_right(c)
         || self.coord_is_top(c)
         || self.coord_is_bottom(c)
     }
 
-    pub fn coord_is_corner(&self, c : Coord) -> bool {
+    pub fn coord_is_corner(&self, c : DPoint2) -> bool {
         (self.coord_is_left(c) || self.coord_is_right(c))
         && (self.coord_is_top(c) || self.coord_is_bottom(c))
     }
 
-    fn boundary_sample_iter<'a>(&'a self) -> Box<Iterator<Item=(Coord,&ZoneSample)> + 'a> {
+    fn boundary_sample_iter<'a>(&'a self) -> Box<Iterator<Item=(DPoint2,&ZoneSample)> + 'a> {
         Box::new(
-            self.samples.iter()
+            (& self.samples).into_iter()
             .filter(move |k_v| {
-                self.coord_is_edge(*k_v.0)
-            }).map(|k_v| (*k_v.0, k_v.1))
+                self.coord_is_edge(k_v.0)
+            }).map(|k_v| (k_v.0, k_v.1))
         )
     }
 
     fn shortest_sample_link(
         &self,
-        self_taken: &[Coord],
+        self_taken: &[DPoint2],
         other: &Zone,
-        other_taken: &[Coord],
+        other_taken: &[DPoint2],
         zones: &Vec<Zone>,
         w: &World,
     ) -> Option<WorldLink> {
@@ -124,43 +124,41 @@ impl Zone {
         shortest
     }
 
-    pub fn new(tl: Point, br: Point, samples: HashMap<Coord, ZoneSample>, samples_per_row: u8) -> Zone {
+    pub fn new(tl: CPoint2, br: CPoint2, samples: TotalGrid<ZoneSample>) -> Zone {
         Zone {
             tl: tl,
             br: br,
             samples: samples,
-            samples_per_row: samples_per_row,
         }
     }
 
-    pub fn barely_within(&self, pt: Point) -> bool {
+    pub fn barely_within(&self, pt: CPoint2) -> bool {
         //constructs another bogus zone on the spot which is just a smaller zone inside
-        let inner = Zone {
-            tl: [self.tl[0]*0.95 + self.br[0]*0.05,
-                  self.tl[1]*0.95 + self.br[1]*0.05],
-            br: [self.tl[0]*0.05 + self.br[0]*0.95,
-                  self.tl[1]*0.05 + self.br[1]*0.95],
-            samples: HashMap::new(),
-            samples_per_row: 99,
+        let inner_tl = self.tl.scale(0.95) + self.br.scale(0.05);
+        let inner_br = self.tl.scale(0.05) + self.br.scale(0.95);
+        let inner_within = {
+            (inner_tl.x <= pt.x && pt.x <= inner_br.x)
+            && (inner_tl.y <= pt.y && pt.y <= inner_br.y)
         };
-        self.within(pt) && !inner.within(pt)
+        self.within(pt) && !inner_within
     }
 
-    pub fn within(&self, other: Point) -> bool {
-        (self.tl[0] <= other[0] && other[0] <= self.br[0])
-        && (self.tl[1] <= other[1] && other[1] <= self.br[1])
+    pub fn within(&self, other: CPoint2) -> bool {
+
+        (self.tl.x <= other.x && other.x <= self.br.x)
+        && (self.tl.y <= other.y && other.y <= self.br.y)
     }
 
-    pub fn overlaps_with(&self, other: (Point,Point)) -> bool { //other.0 == other.tl
+    pub fn overlaps_with(&self, other: (CPoint2,CPoint2)) -> bool { //other.0 == other.tl
         ! {
             //my left is right of your right
-            self.tl[0] > other.1[0]
+            self.tl.x > other.1.x
             //my right is left of your left
-            || self.br[0] < other.0[0]
+            || self.br.x < other.0.x
             //my top is below your bottom
-            || self.tl[1] > other.1[1]
+            || self.tl.y > other.1.y
             //my bottom is above your top
-            || self.br[1] < other.0[1]
+            || self.br.y < other.0.y
 
         }
     }
@@ -169,7 +167,7 @@ impl Zone {
 impl::std::fmt::Debug for Zone {
     fn fmt(&self, f: &mut::std::fmt::Formatter) -> Result<(),::std::fmt::Error> {
         write!(f, "tl:{:?}, br:{:?}, ({},{})",
-            self.tl, self.br, self.samples_per_row, self.get_samples_per_col().unwrap()
+            self.tl, self.br, self.get_samples_per_row(), self.get_samples_per_col(),
         )
     }
 }
@@ -181,14 +179,20 @@ pub fn generate_zones_for<R:Rng>(w: &World, rng: &mut R) -> Vec<Zone> {
     let mut stop_when_zero: i16 = 500;
     let mut zones: Vec<Zone> = vec![];
     'outer: while stop_when_zero > 0 {
-        let tl = [rng.gen::<f32>()*0.9 + 0.05, rng.gen::<f32>()*0.9 + 0.05];
-        let (x_steps, y_steps) = (
-            rng.gen::<u8>() % 3 + 3,
-            rng.gen::<u8>() % 3 + 3,
+        let tl = CPoint2::new(
+            rng.gen::<f32>()*0.9 + 0.05,
+            rng.gen::<f32>()*0.9 + 0.05,
+        );
+        let zone_sample_dim = DPoint2::new(
+            (rng.gen::<u8>() % 3) as i32 + 3,
+            (rng.gen::<u8>() % 3) as i32 + 3,
         );
         // (steps-1) to make sure the last sample points are ON the right/bottom edges
-        let br = [tl[0] + (x_steps-1) as f32 * distance_per_x_step, tl[1] + (y_steps-1) as f32 * distance_per_y_step];
-        if br[0] > 0.95 || br[1] > 0.95 {
+        let br = CPoint2::new(
+            tl.x + (zone_sample_dim.x-1) as f32 * distance_per_x_step,
+            tl.y + (zone_sample_dim.y-1) as f32 * distance_per_y_step,
+        );
+        if br.x > 0.95 || br.y > 0.95 {
             stop_when_zero -= 1;
             continue 'outer;
         }
@@ -199,26 +203,29 @@ pub fn generate_zones_for<R:Rng>(w: &World, rng: &mut R) -> Vec<Zone> {
                 continue 'outer;
             }
         }
-        let mut samples: HashMap<Coord,ZoneSample> = HashMap::new();
+        let mut samples: TotalGridBuilder<_> = TotalGridBuilder::new();
         let mut count_walkable_materials = 0;
-        for y in 0..y_steps {
-            for x in 0..x_steps {
-                let coord = [x,y];
-                let (x_offset, y_offset) = (x as f32 * distance_per_x_step, y as f32 * distance_per_y_step);
-                let pt = [tl[0] + x_offset, tl[1] + y_offset];
+        for y in 0..zone_sample_dim.x {
+            for x in 0..zone_sample_dim.y {
+                let coord = DPoint2::new(x as i32,y as i32);
+                let offset = CPoint2::new(x as f32 * distance_per_x_step, y as f32 * distance_per_y_step);
+                // let (x_offset, y_offset) = (x as f32 * distance_per_x_step, y as f32 * distance_per_y_step);
+                let pt = tl + offset;
+
+                            assert!(pt.y <= 1.0);
                 let point_data = w.calc_sample_data_at(pt);
                 let mat = w.material_at(pt, &point_data);
                 match mat {
                     Material::Water | Material::Ice => (),
                     _ => count_walkable_materials += 1,
                 }
-                samples.insert(coord, ZoneSample{data:point_data, pt:pt, mat:mat});
+                samples.append(ZoneSample{data:point_data, pt:pt, mat:mat});
             }
         }
         if count_walkable_materials >= 5 {
             // not too much ice|water
             zones.push(
-                Zone::new(tl, br, samples, x_steps)
+                Zone::new(tl, br, samples.finalize(zone_sample_dim).unwrap())
             );
             stop_when_zero -= zones.len() as i16 + 1; //prevent overload
         } else {
@@ -233,10 +240,10 @@ pub fn generate_zones_for<R:Rng>(w: &World, rng: &mut R) -> Vec<Zone> {
 
 #[derive(Debug,Copy,Clone,PartialEq)]
 pub struct WorldLink {
-    zone_a_coord: Coord,
-    zone_b_coord: Coord,
-    world_a_pt: Point,
-    world_b_pt: Point,
+    zone_a_coord: DPoint2,
+    zone_b_coord: DPoint2,
+    world_a_pt: CPoint2,
+    world_b_pt: CPoint2,
     mat_a: Material,
     mat_b: Material,
     land_link: bool,
@@ -250,15 +257,13 @@ fn inside_slice<T: PartialEq>(x: &T, slice: &[T]) -> bool {
     false
 }
 
-type Coord = [u8;2];
-
 impl WorldLink {
     const MAX_LEN : f32 = 0.17;
     pub fn length(&self) -> f32 {
         pt_wider_dist(self.world_a_pt, self.world_b_pt)
     }
-    pub fn get_world_a_pt(&self) -> Point {self.world_a_pt}
-    pub fn get_world_b_pt(&self) -> Point {self.world_b_pt}
+    pub fn get_world_a_pt(&self) -> CPoint2 {self.world_a_pt}
+    pub fn get_world_b_pt(&self) -> CPoint2 {self.world_b_pt}
     pub fn get_mat_a(&self) -> Material{self.mat_a}
     pub fn get_mat_b(&self) -> Material{self.mat_b}
 }
@@ -267,7 +272,7 @@ pub fn generate_links_for<R:Rng>(zones: &Vec<Zone>, rng: &mut R, w : &World) -> 
     let mut z : Vec<_> = zones.iter().collect();
     rng.shuffle(&mut z);
     let mut links: Vec<WorldLink> = vec![];
-    let mut taken_samples: Vec<Vec<Coord>> = zones.iter().map(|_| vec![]).collect();
+    let mut taken_samples: Vec<Vec<DPoint2>> = zones.iter().map(|_| vec![]).collect();
     for (i, zone_i) in zones.iter().enumerate() {
         'pair_loop: for (j, zone_j) in zones.iter().enumerate().skip(i+1) {
             if let Some(shortest) = zone_i.shortest_sample_link(

@@ -1,11 +1,11 @@
 extern crate noise;
 use self::noise::{Perlin,Seedable,NoiseModule};
-use super::{Point,Point3D};
+use ::points::*;
 use super::sigmoid;
 
 
 extern crate rand;
-use self::rand::{Rng,Isaac64Rng};
+use self::rand::{Rng};
 
 const NUM_PERLINS : usize = 50;
 
@@ -70,15 +70,6 @@ impl NoiseField {
         }
     }
 
-    #[inline]
-    fn pt_map(pt : Point, zoom : f32) -> Point {
-        [pt[0] * zoom, pt[1] * zoom]
-    }
-
-    fn pt3d_map(pt : Point3D, zoom : f32) -> Point3D {
-        [pt[0] * zoom, pt[1] * zoom, pt[2] * zoom]
-    }
-
     pub fn agglomerate(self, other : NoiseField, relative_multipliers : Option<(f32, f32)>) -> NoiseField {
         let mut a = self.perlin_units;
         let mut b = other.perlin_units;
@@ -93,24 +84,30 @@ impl NoiseField {
             perlin_units : combined,
         }
     }
+    // 
+    // pub fn sample(&self, pt : CPoint2) -> f32 {
+    //     let mut sample_tot : f32 = 0.0;
+    //     for pu in self.perlin_units.iter() {
+    //         sample_tot +=
+    //             pu.p1.get(Self::cpoint2_raw_scaled(pt, pu.zoom1))
+    //             * pu.p2.get(Self::cpoint2_raw_scaled(pt, pu.zoom2))
+    //             * pu.mult;
+    //     }
+    //     sigmoid(sample_tot, self.perlin_units.len() as f32)
+    // }
 
-    pub fn sample(&self, pt : Point) -> f32 {
-        let mut sample_tot : f32 = 0.0;
-        for pu in self.perlin_units.iter() {
-            sample_tot +=
-                pu.p1.get(Self::pt_map(pt, pu.zoom1))
-                * pu.p2.get(Self::pt_map(pt, pu.zoom2))
-                * pu.mult;
-        }
-        sigmoid(sample_tot, self.perlin_units.len() as f32)
+
+    #[inline]
+    fn cpoint3_raw_scaled(pt : CPoint3, zoom : f32) -> [f32;3] {
+        [pt.x * zoom, pt.y * zoom, pt.z * zoom]
     }
 
-    pub fn sample_3d(&self, pt : Point3D) -> f32 {
+    pub fn sample_3d(&self, pt : CPoint3) -> f32 {
         let mut sample_tot : f32 = 0.0;
         for pu in self.perlin_units.iter() {
             sample_tot +=
-                pu.p1.get(Self::pt3d_map(pt, pu.zoom1))
-                * pu.p2.get(Self::pt3d_map(pt, pu.zoom2))
+                pu.p1.get(Self::cpoint3_raw_scaled(pt, pu.zoom1))
+                * pu.p2.get(Self::cpoint3_raw_scaled(pt, pu.zoom2))
                 * pu.mult;
         }
         sigmoid(sample_tot, self.perlin_units.len() as f32)
